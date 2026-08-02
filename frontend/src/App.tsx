@@ -44,7 +44,7 @@ function CustomAudioRenderer() {
   return trackToPlay ? <AudioTrack trackRef={trackToPlay} /> : null;
 }
 
-const TOKEN_SERVER_URL = 'http://localhost:8880';
+const TOKEN_SERVER_URL = import.meta.env.PROD ? '' : 'http://localhost:8880';
 
 const TOPICS = [
   { 
@@ -448,7 +448,7 @@ function App() {
       const identity = `user-${Date.now()}`;
       
       const resp = await fetch(
-        `${TOKEN_SERVER_URL}/token?room=${roomName}&identity=${identity}&topic=${encodeURIComponent(currentTopicObj.title)}`
+        `${TOKEN_SERVER_URL}/api/token?room=${roomName}&identity=${identity}&topic=${encodeURIComponent(currentTopicObj.title)}`
       );
       
       if (!resp.ok) {

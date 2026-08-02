@@ -27,7 +27,7 @@ class TokenHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/token":
+        if parsed.path not in ("/token", "/api/token"):
             self.send_response(404)
             self.end_headers()
             return
