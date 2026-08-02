@@ -12,9 +12,9 @@ from livekit.agents.voice import Agent
 from livekit.agents import AgentSession
 from livekit.plugins import groq, openai, deepgram, elevenlabs, bey, silero
 
-from .config import AVATAR_ID
-from .session import Session
-from .prompts import SYSTEM_PROMPT, EVALUATION_PROMPT
+from app.config import AVATAR_ID
+from app.session import Session
+from app.prompts import SYSTEM_PROMPT, EVALUATION_PROMPT
 
 logger = logging.getLogger("interviewer")
 

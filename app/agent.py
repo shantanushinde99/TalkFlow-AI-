@@ -9,10 +9,10 @@ import os
 from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(env_path)  # Bulletproof load for IPC child processes
-from .session import Session
-from .prompts import SYSTEM_PROMPT
-from .config import AVATAR_ID
-from .evaluator import Evaluator
+from app.session import Session
+from app.prompts import SYSTEM_PROMPT
+from app.config import AVATAR_ID
+from app.evaluator import Evaluator
 
 logger = logging.getLogger("interviewer")
 

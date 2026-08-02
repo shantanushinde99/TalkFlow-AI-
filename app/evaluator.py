@@ -1,6 +1,6 @@
 from livekit.plugins import groq
-from .prompts import EVALUATION_PROMPT
-from .session import Session
+from app.prompts import EVALUATION_PROMPT
+from app.session import Session
 
 class Evaluator:
     def __init__(self):
