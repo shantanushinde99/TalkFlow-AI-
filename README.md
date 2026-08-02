@@ -11,16 +11,17 @@ The system adapts to the user's answers in real-time—increasing difficulty aft
 ## 🚀 Features
 
 - **Ultra-Low Latency Voice Chat**: Fully streaming audio pipeline from speech-to-text to LLM inference to text-to-speech.
+- **Dual-LLM Engine Architecture**: Uses **Mistral AI** (`mistral-small-latest`) for real-time natural conversation and **Groq** (`openai/gpt-oss-120b`) for thorough, high-speed report evaluation.
 - **Adaptive Questioning**: The AI evaluates answers on the fly and dynamically adjusts the interview difficulty.
-- **Immersive AI Avatar**: A real-time video avatar that lip-syncs to the AI's generated voice.
-- **Comprehensive Evaluation**: Automatically generates a detailed Markdown report scoring Technical Knowledge, Communication, and Confidence without relying on persistent databases.
+- **Immersive AI Avatar with Audio Fallback**: A real-time video avatar that lip-syncs to the AI's generated voice, equipped with automatic fallback to pure audio mode if avatar limits are reached.
+- **Domain-Tailored Evaluation**: Automatically generates a detailed Markdown report scoring Technical Knowledge, Communication, and Confidence customized specifically to the user's chosen interview topic.
 - **Stateless Architecture**: Operates entirely in memory with a strict 10-minute session limit to ensure security and scalability.
 
 ---
 
 ## 🎯 Current Evaluation Topics
 
-For this MVP phase, the system is pre-configured to evaluate candidates across exactly **4 specific domains**:
+The system allows candidates to select specific domain topics for evaluation, including:
 
 1. **Artificial Intelligence**: LLMs, AI ethics, agent autonomy, and model deployment.
 2. **Trading & Finance**: Market trends, algorithmic trading execution, and portfolio risk management.
@@ -50,9 +51,10 @@ graph TD
         Agent[LiveKit Agent]
         VAD[Silero VAD]
         STT[Deepgram STT]
-        LLM[Groq LLM]
+        LLM[Mistral AI API]
         TTS[Deepgram TTS]
         Avatar[Beyond Presence Avatar]
+        Evaluator[Groq LLM Evaluator]
     end
 
     UI <--> RTC
@@ -65,12 +67,11 @@ graph TD
     TTS -->|Agent Audio| RTC
     Avatar -->|Lip-synced Video| RTC
     RTC -->|Avatar Video| UI
-    Agent -->|Evaluation Data Packet| Report
+    Agent -->|Conversation History| Evaluator
+    Evaluator -->|Topic Report Packet| Report
 ```
 
 ### Simplified Linear Pipeline
-
-If you prefer a straight-line view of how data travels through the system during a conversation:
 
 ```mermaid
 graph TD
@@ -85,7 +86,7 @@ graph TD
     subgraph AI_Processing_Pipeline [Python Backend]
         VAD[Silero VAD<br/>Detects Speech Activity]
         STT[Deepgram STT<br/>Streams Audio to Text]
-        LLM[Groq LLM<br/>gpt-oss-120b Inference]
+        LLM[Mistral AI API<br/>mistral-small-latest]
         TTS[Deepgram TTS<br/>aura-2-delia-en Synthesis]
         BEY[Beyond Presence<br/>Calculates Lip-Sync]
     end
@@ -111,73 +112,36 @@ graph TD
 
 ---
 
-## 🎙️ How the Audio Pipeline Works
-
-The core of the application relies on a **streaming pipeline** to ensure conversational latency remains as low as possible. 
+## 🎙️ How the Audio & Conversation Pipeline Works
 
 1. **Voice Activity Detection (VAD)**: The user's audio is streamed to the backend via WebRTC. **Silero VAD** monitors the stream to detect when the user starts and stops speaking.
 2. **Speech-to-Text (STT)**: Once speech is detected, the audio is routed to **Deepgram STT**, which transcribes the audio into text in real-time.
-3. **Large Language Model (LLM)**: The transcript is added to the interview context and streamed to **Groq** (using `openai/gpt-oss-120b`). The LLM is instructed by a strict System Prompt to evaluate the response and ask exactly *one* follow-up question.
-4. **Text-to-Speech (TTS)**: As the LLM streams its text response back, it is immediately fed into **Deepgram TTS** (using the `aura-2-delia-en` voice model).
-5. **Playback**: The synthesized audio is streamed back through the LiveKit room directly to the user's headset.
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant V as Silero VAD
-    participant S as Deepgram STT
-    participant L as Groq LLM
-    participant T as Deepgram TTS
-    
-    U->>V: Speaks into Mic
-    V->>S: Detects Speech, Sends Audio
-    S->>L: Returns Text Transcript
-    L->>T: Streams Text Chunks
-    T->>U: Streams Audio Output
-```
+3. **Conversational LLM**: The transcript is fed into **Mistral AI** (`mistral-small-latest`), which evaluates the response and asks a focused follow-up question.
+4. **Text-to-Speech (TTS)**: As Mistral streams text response back, it is fed into **Deepgram TTS** (`aura-2-delia-en`).
+5. **Playback**: The synthesized audio is streamed back through LiveKit directly to the user.
 
 ---
 
-## 👤 How the Avatar Works
+## 👤 Avatar & Fallback Handling
 
-To make the interview feel human, the system uses **Beyond Presence** via the `livekit-plugins-bey` package.
-
-1. **Initialization**: When the backend agent starts, an `AvatarSession` is spawned alongside the main AI agent.
-2. **Audio Sync**: The avatar intercepts the synthesized audio stream coming from Deepgram TTS.
-3. **Video Generation**: Beyond Presence processes the audio and generates a high-quality, real-time video stream where the avatar's lips perfectly synchronize with the spoken words.
-4. **Rendering**: This video stream is published to the LiveKit room as a standard camera track. The React frontend hooks into this track using `<VideoTrack />` and renders the AI Coach on the screen.
-
-```mermaid
-sequenceDiagram
-    participant LLM as Groq LLM
-    participant TTS as Deepgram TTS
-    participant BEY as Beyond Presence
-    participant RTC as LiveKit Room
-    participant UI as React Frontend
-
-    LLM->>TTS: Streams Generated Text
-    TTS->>BEY: Pipes Audio Stream internally
-    TTS->>RTC: Publishes Agent Audio Track
-    
-    Note over BEY: Analyzes audio phonemes<br/>& dynamically renders facial animation
-    
-    BEY->>RTC: Publishes Video Track (Lip-synced)
-    RTC->>UI: Delivers perfectly synced Audio + Video
-```
+1. **Initialization**: An `AvatarSession` is spawned alongside the voice agent.
+2. **Audio & Lip Sync**: The avatar intercepts Deepgram TTS audio and generates real-time video synchronized to the speech.
+3. **Graceful Fallback**: If Beyond Presence API quota is reached or unavailable, the backend seamlessly falls back to audio-only voice agent mode, ensuring uninterrupted interview sessions.
 
 ---
 
 ## 📊 Evaluation & Report Generation
 
-Because the application is stateless (no database), all conversation history is stored in RAM during the active session. 
-
-When the strict 10-minute timer expires (or the user clicks "Stop Session"), the following happens:
-1. The backend aggregates the entire conversation into a single transcript string.
-2. The agent pauses its conversational persona and creates a **fresh, isolated Chat Context**.
-3. It injects a highly detailed **Evaluation Prompt** outlining the scoring rubrics for Technical Knowledge, Communication, and Confidence.
-4. The LLM generates a formatted Markdown report.
-5. The backend encodes this report as a JSON payload and publishes it as a data packet over the LiveKit Data Channel.
-6. The frontend listens for the `data_received` event, catches the `report` payload, and renders it beautifully using `ReactMarkdown`.
+When the session completes:
+1. The backend extracts the conversation transcript from `agent_session.history.messages()`.
+2. It passes both the **Interview Topic** and **Transcript** into a domain-tailored Evaluation Prompt.
+3. **Groq** (`openai/gpt-oss-120b`) generates a structured Markdown report scoring:
+   - **Technical / Domain Understanding** (tailored specifically to the chosen topic)
+   - **Communication Skills**
+   - **Confidence**
+   - **Strong & Weak Concepts**
+   - **Actionable Learning Recommendations**
+4. The report is published over LiveKit's Data Channel and rendered cleanly in the React frontend.
 
 ---
 
@@ -187,40 +151,41 @@ When the strict 10-minute timer expires (or the user clicks "Stop Session"), the
 - **Backend**: Python, `asyncio`, LiveKit Agents (`livekit-agents`)
 - **WebRTC Transport**: LiveKit
 - **Speech-to-Text**: Deepgram
-- **Text-to-Speech**: Deepgram Aura Text-to-Speech (using the `aura-2-delia-en` voice model)
-- **Language Model**: Groq (`gpt-oss-120b`)
-- **Avatar Provider**: Beyond Presence
+- **Text-to-Speech**: Deepgram Aura (`aura-2-delia-en`)
+- **Conversational LLM**: Mistral AI (`mistral-small-latest`)
+- **Evaluator LLM**: Groq (`openai/gpt-oss-120b`)
+- **Avatar Provider**: Beyond Presence (`livekit-plugins-bey`)
 
 ---
 
 ## ⚙️ Setup & Installation
 
 1. **Install Python Dependencies:**
-   ```bash
+   ```cmd
    python -m venv .venv
    .venv\Scripts\activate
-   pip install livekit-agents livekit-plugins-deepgram livekit-plugins-elevenlabs livekit-plugins-bey livekit-plugins-silero livekit-plugins-groq python-dotenv
+   pip install livekit-agents livekit-plugins-deepgram livekit-plugins-elevenlabs livekit-plugins-bey livekit-plugins-silero livekit-plugins-groq livekit-plugins-openai python-dotenv
    ```
 
 2. **Install Frontend Dependencies:**
-   ```bash
+   ```cmd
    cd frontend
    npm install
    ```
 
 3. **Configure Environment Variables:**
-   Ensure you have a `.env` file in the root directory with the following keys:
+   Create a `.env` file in the root directory:
    ```env
-   LIVEKIT_URL=...
-   LIVEKIT_API_KEY=...
-   LIVEKIT_API_SECRET=...
-   DEEPGRAM_API_KEY=...
-   GROQ_API_KEY=...
-   BEY_API_KEY=...
+   LIVEKIT_URL=wss://your-livekit-domain.livekit.cloud
+   LIVEKIT_API_KEY=your_livekit_key
+   LIVEKIT_API_SECRET=your_livekit_secret
+   DEEPGRAM_API_KEY=your_deepgram_key
+   MISTRAL_API_KEY=your_mistral_key
+   GROQ_API_KEY=your_groq_key
+   BEY_API_KEY=your_bey_avatar_key
    ```
 
 4. **Run the Application:**
-   Execute the included launch script to start all services simultaneously:
    ```cmd
    start.bat
    ```
