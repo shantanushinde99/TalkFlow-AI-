@@ -136,14 +136,14 @@ async def entrypoint(ctx: JobContext):
                 "Our 10 minutes are up. Thank you for the discussion! I am generating your evaluation report now.",
                 allow_interruptions=False,
             )
-            await asyncio.sleep(8)
+            await asyncio.sleep(10)
         else:
             logger.info("Session ended early by user.")
             agent_session.say(
                 "Thank you for the discussion! I am generating your evaluation report now.",
                 allow_interruptions=False,
             )
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
             
         await generate_and_send_report()
         await asyncio.sleep(2)

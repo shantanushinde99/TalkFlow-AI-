@@ -65,6 +65,7 @@ async def entrypoint(ctx: JobContext):
             "Our 10 minutes are up. Let me generate your final evaluation report.",
             allow_interruptions=False,
         )
+        await asyncio.sleep(10)
 
         # Gather context from conversation history
         try:
