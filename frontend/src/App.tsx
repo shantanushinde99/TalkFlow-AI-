@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LiveKitRoom,
-  RoomAudioRenderer,
   useVoiceAssistant,
   useRemoteParticipants,
   VideoTrack,
@@ -134,10 +133,10 @@ function SessionDashboard({
   onEndSession: () => void;
   onReportReceived: (report: string) => void;
 }) {
-  const { state } = useVoiceAssistant();
+  useVoiceAssistant();
   const [hasStarted, setHasStarted] = useState(false);
   const [avatarReady, setAvatarReady] = useState(false);
-  const [activeTab, setActiveTab] = useState<'prompts' | 'timeline' | 'highlights'>('prompts');
+  // Tabs removed since unused
   const [micMuted, setMicMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(!webcamEnabled);
   const [timeLeft, setTimeLeft] = useState(600);
@@ -145,7 +144,7 @@ function SessionDashboard({
 
   const { localParticipant } = useLocalParticipant();
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [localVideoTrack, setLocalVideoTrack] = useState<LocalVideoTrack | null>(null);
+  // localVideoTrack state removed
   
   const room = useRoomContext();
 
@@ -202,7 +201,6 @@ function SessionDashboard({
       if (webcamEnabled && !videoOff) {
         try {
           track = await createLocalVideoTrack();
-          setLocalVideoTrack(track);
           if (videoRef.current) {
             track.attach(videoRef.current);
           }
@@ -227,7 +225,7 @@ function SessionDashboard({
 
   const handleStartSession = () => {
     setHasStarted(true);
-    localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ type: 'start_interview' })), 1);
+    localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ type: 'start_interview' })), { reliable: true });
   };
 
   const toggleMic = () => {
