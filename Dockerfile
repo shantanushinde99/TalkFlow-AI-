@@ -83,4 +83,4 @@ USER appuser
 
 # Run the application
 # The "start" command tells the worker to connect to LiveKit and begin waiting for jobs.
-CMD ["python", "app/main.py", "start"]
+CMD ["python", "-m", "app.main", "start"]
