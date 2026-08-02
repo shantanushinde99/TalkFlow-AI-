@@ -59,12 +59,14 @@ const TOPICS = [
   },
   { 
     id: 'trading', 
-    title: 'Trading & Finance', 
-    desc: 'Market trends, strategies, and economy',
+    title: 'Trading', 
+    desc: 'Intraday, Market structure, Liquidity, Trend Analysis, HH/HL/LH/LL, Strategy Development, Trading Psychology, Risk Management, Prop Firm vs Broker, Candlesticks',
     prompts: [
-      { id: '01', title: 'How do you analyze market volatility during news events?', desc: 'Explain VIX interpretation, order book dynamics, and risk management.', completed: true },
-      { id: '02', title: 'Explain algorithmic trading execution strategies.', desc: 'Discuss TWAP, VWAP, and liquidity impact analysis.', completed: true },
-      { id: '03', title: 'What is your approach to portfolio diversification?', desc: 'Cover asset correlation, Sharpe ratio, and drawdown limits.', completed: false },
+      { id: '01', title: 'Explain Market Structure and Trend Analysis.', desc: 'Discuss Higher Highs, Higher Lows, Lower Highs, and Lower Lows.', completed: false },
+      { id: '02', title: 'What is your approach to Intraday trading and Liquidity?', desc: 'How do you identify liquidity sweeps and execute intraday setups?', completed: false },
+      { id: '03', title: 'Describe Candlestick analysis and Strategy Development.', desc: 'How do you use candlesticks to build and refine a trading strategy?', completed: false },
+      { id: '04', title: 'How do you handle Risk Management and Trading Psychology?', desc: 'Discuss position sizing, dealing with losses, and maintaining discipline.', completed: false },
+      { id: '05', title: 'Compare trading with a Prop Firm versus a traditional Broker.', desc: 'What are the pros, cons, and differences in risk parameters?', completed: false },
     ]
   },
   { 
@@ -445,8 +447,10 @@ function App() {
       const roomName = `interview-${Date.now()}`;
       const identity = `user-${Date.now()}`;
       
+      const topicWithContext = `${currentTopicObj.title}. Topics to cover: ${currentTopicObj.desc}`;
+      
       const resp = await fetch(
-        `${TOKEN_SERVER_URL}/api/token?room=${roomName}&identity=${identity}&topic=${encodeURIComponent(currentTopicObj.title)}`
+        `${TOKEN_SERVER_URL}/api/token?room=${roomName}&identity=${identity}&topic=${encodeURIComponent(topicWithContext)}`
       );
       
       if (!resp.ok) {
