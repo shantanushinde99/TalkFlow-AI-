@@ -1,27 +1,46 @@
+"""Final report generation from the interview transcript."""
+import logging
+
+from livekit.agents import llm
 from livekit.plugins import groq
+
 from app.prompts import EVALUATION_PROMPT
 from app.session import Session
 
-class Evaluator:
-    def __init__(self):
-        self.llm = groq.LLM(model="openai/gpt-oss-120b")
+logger = logging.getLogger("interviewer")
 
-    async def generate_report(self, session: Session) -> str:
-        transcript = ""
-        for turn in session.conversation:
-            role = turn.get("role", "user")
-            content = turn.get("content", "")
-            transcript += f"{role}: {content}\n"
-        
-        prompt = EVALUATION_PROMPT.format(transcript=transcript)
-        
-        response = await self.llm.chat(
-            messages=[{"role": "user", "content": prompt}]
+EVALUATION_MODEL = "openai/gpt-oss-120b"
+
+
+def collect_transcript(history: llm.ChatContext, session: Session) -> str:
+    """Copy user/assistant turns from the agent history into the session and return them as text."""
+    session.conversation = [
+        {"role": m.role, "content": m.text_content.strip()}
+        for m in history.messages()
+        if m.role in ("user", "assistant") and m.text_content and m.text_content.strip()
+    ]
+    return "\n".join(
+        f"{'Candidate' if t['role'] == 'user' else 'Interviewer'}: {t['content']}" for t in session.conversation
+    )
+
+
+async def generate_report(session: Session, transcript: str) -> str:
+    """Ask Groq for the Markdown evaluation report."""
+    if not any(t["role"] == "user" for t in session.conversation):
+        return (
+            "# Interview Evaluation Report\n\n"
+            "The session ended before you answered any questions, so there is nothing to evaluate yet. "
+            "Start a new session and explain your thinking out loud."
         )
-        # Handle LiveKit LLM response stream/text depending on LiveKit API
-        # LLM.chat usually returns a ChatChunk stream or we can just gather it
-        full_text = ""
-        async for chunk in response:
-            full_text += chunk.delta.content or ""
-            
-        return full_text
+
+    ctx = llm.ChatContext()
+    ctx.add_message(
+        role="user",
+        content=EVALUATION_PROMPT.format(topic=session.topic, transcript=transcript, metrics=session.metrics_summary()),
+    )
+    report = ""
+    async with groq.LLM(model=EVALUATION_MODEL).chat(chat_ctx=ctx) as stream:
+        async for chunk in stream:
+            if chunk.delta and chunk.delta.content:
+                report += chunk.delta.content
+    return report

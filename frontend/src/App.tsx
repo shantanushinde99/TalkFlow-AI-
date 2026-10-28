@@ -1,546 +1,395 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   LiveKitRoom,
-  useVoiceAssistant,
-  useRemoteParticipants,
+  RoomAudioRenderer,
+  StartAudio,
   VideoTrack,
+  useDataChannel,
   useLocalParticipant,
-  useTracks,
-  AudioTrack,
-  useRoomContext
+  useTranscriptions,
+  useVoiceAssistant,
 } from '@livekit/components-react';
-import { Track, LocalVideoTrack, createLocalVideoTrack, RoomEvent } from 'livekit-client';
 import ReactMarkdown from 'react-markdown';
-import '@livekit/components-styles';
 import './App.css';
 
-function ReportScreen({ reportData, onRestart }: { reportData: string, onRestart: () => void }) {
-  return (
-    <div className="app-container">
-      <div className="setup-container" style={{ maxWidth: '800px', width: '100%' }}>
-        <h2 style={{ marginBottom: '1.5rem', textAlign: 'center', color: '#0F172A' }}>AI Evaluation Report</h2>
-        <div className="report-content" style={{ lineHeight: '1.6', color: '#334155', textAlign: 'left', maxHeight: '60vh', overflowY: 'auto', padding: '1.5rem', background: '#F8FAFC', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
-          <ReactMarkdown>{reportData}</ReactMarkdown>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem' }}>
-          <button className="btn-primary-green" onClick={onRestart}>
-            Start New Session
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CustomAudioRenderer() {
-  const { localParticipant } = useLocalParticipant();
-  const tracks = useTracks([Track.Source.Microphone])
-    .filter(t => t.participant.identity !== localParticipant.identity);
-  
-  const avatarTrack = tracks.find(t => t.participant.identity.includes('bey-avatar'));
-  const trackToPlay = avatarTrack || tracks[0];
-  
-  return trackToPlay ? <AudioTrack trackRef={trackToPlay} /> : null;
-}
-
 const TOKEN_SERVER_URL = import.meta.env.PROD ? '' : 'http://localhost:8880';
+const SESSION_SECONDS = 600;
 
-const TOPICS = [
-  { 
-    id: 'ai', 
-    title: 'Artificial Intelligence', 
-    desc: 'Discuss LLMs, ethics, and future of AI',
-    prompts: [
-      { id: '01', title: 'How would you explain Transformer models in simple terms?', desc: 'Focus on self-attention mechanisms, tokenization, and contextual representation.', completed: true },
-      { id: '02', title: 'Describe ethical concerns surrounding AI deployment.', desc: 'Include bias mitigation, hallucination prevention, and data privacy standard.', completed: true },
-      { id: '03', title: 'What is your perspective on AI agent autonomy?', desc: 'Discuss human-in-the-loop architectures and safety guardrails.', completed: false },
-      { id: '04', title: 'How do you handle rate limits and API fallback logic?', desc: 'Explain retry strategies, exponential backoff, and circuit breakers.', completed: false },
-    ]
-  },
-  { 
-    id: 'trading', 
-    title: 'Trading', 
-    desc: 'Intraday, Market structure, Liquidity, Trend Analysis, HH/HL/LH/LL, Strategy Development, Trading Psychology, Risk Management, Prop Firm vs Broker, Candlesticks',
-    prompts: [
-      { id: '01', title: 'Explain Market Structure and Trend Analysis.', desc: 'Discuss Higher Highs, Higher Lows, Lower Highs, and Lower Lows.', completed: false },
-      { id: '02', title: 'What is your approach to Intraday trading and Liquidity?', desc: 'How do you identify liquidity sweeps and execute intraday setups?', completed: false },
-      { id: '03', title: 'Describe Candlestick analysis and Strategy Development.', desc: 'How do you use candlesticks to build and refine a trading strategy?', completed: false },
-      { id: '04', title: 'How do you handle Risk Management and Trading Psychology?', desc: 'Discuss position sizing, dealing with losses, and maintaining discipline.', completed: false },
-      { id: '05', title: 'Compare trading with a Prop Firm versus a traditional Broker.', desc: 'What are the pros, cons, and differences in risk parameters?', completed: false },
-    ]
-  },
-  { 
-    id: 'cs', 
-    title: 'Computer Science', 
-    desc: 'System design, algorithms, and tech',
-    prompts: [
-      { id: '01', title: 'How do you optimize React applications for high throughput?', desc: 'Code-splitting, memoization (useMemo/React.memo), and preventing re-renders.', completed: true },
-      { id: '02', title: 'Describe experience with microservices vs monoliths.', desc: 'Tradeoffs regarding operational complexity, IPC overhead, and team scaling.', completed: true },
-      { id: '03', title: 'Explain distributed caching strategies.', desc: 'Redis cluster cache invalidation, write-through vs write-back.', completed: false },
-    ]
-  },
-  { 
-    id: 'general', 
-    title: 'General Communication', 
-    desc: 'Improve your speaking and clarity',
-    prompts: [
-      { id: '01', title: 'How do you structure complex ideas clearly?', desc: 'Using Pyramid Principle, concise executive summaries, and active listening.', completed: true },
-      { id: '02', title: 'Describe a situation where you resolved a disagreement.', desc: 'Empathy, objective criteria, and win-win negotiation strategies.', completed: false },
-    ]
-  },
-];
+const DOMAINS: Record<string, string[]> = {
+  Technical: [
+    'Artificial Intelligence', 'LLMs', 'Transformers', 'Prompt Engineering', 'DSA',
+    'Operating Systems', 'DBMS', 'Computer Networks', 'OOP', 'System Design',
+  ],
+  Trading: [
+    'Liquidity', 'Support and Resistance', 'Market Structure', 'Price Action', 'Candlestick Patterns',
+    'Risk Management', 'Supply and Demand', 'Order Blocks', 'Break of Structure (BOS)', 'Change of Character (CHOCH)',
+  ],
+};
 
-function AvatarView({ onAvatarReady }: { onAvatarReady: () => void }) {
-  const participants = useRemoteParticipants();
+const STATUS: Record<string, string> = {
+  listening: 'Listening',
+  thinking: 'Thinking',
+  speaking: 'Speaking',
+  initializing: 'Getting ready',
+  idle: 'Idle',
+  failed: 'Connection failed',
+};
 
-  const avatarParticipant = participants.find(p => p.getTrackPublication(Track.Source.Camera)?.track);
-  const videoTrack = avatarParticipant?.getTrackPublication(Track.Source.Camera);
+const ICONS = {
+  mic: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3',
+  micOff: 'M2 2l20 20M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23M12 19v3',
+  cam: 'M23 7l-7 5 7 5V7zM3 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z',
+  camOff: 'M2 2l20 20M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10',
+  end: 'M18 6L6 18M6 6l12 12',
+};
 
-  useEffect(() => {
-    if (videoTrack?.track) {
-      onAvatarReady();
-    }
-  }, [videoTrack, onAvatarReady]);
-
-  if (avatarParticipant && videoTrack?.track) {
-    return (
-      <VideoTrack
-        trackRef={{
-          participant: avatarParticipant,
-          publication: videoTrack,
-          source: Track.Source.Camera,
-        }}
-        className="avatar-video-feed"
-        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-      />
-    );
-  }
-
+function Icon({ name, size = 20 }: { name: keyof typeof ICONS; size?: number }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8', gap: '1rem' }}>
-      <div className="speaking-pulse" style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(99, 102, 241, 0.2)', border: '2px solid #6366F1' }}></div>
-      <p style={{ fontWeight: 500, fontSize: '0.95rem' }}>Initializing AI Avatar Coach...</p>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={ICONS[name]} />
+    </svg>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <span className="brand-mark"><Icon name="mic" size={16} /></span>
+      TalkFlow
     </div>
   );
 }
 
-function SessionDashboard({
-  topicObj,
-  webcamEnabled,
-  onEndSession,
-  onReportReceived,
-}: {
-  topicObj: typeof TOPICS[0];
-  webcamEnabled: boolean;
-  onEndSession: () => void;
-  onReportReceived: (report: string) => void;
-}) {
-  useVoiceAssistant();
-  const [hasStarted, setHasStarted] = useState(false);
-  const [avatarReady, setAvatarReady] = useState(false);
-  // Tabs removed since unused
-  const [micMuted, setMicMuted] = useState(false);
-  const [videoOff, setVideoOff] = useState(!webcamEnabled);
-  const [timeLeft, setTimeLeft] = useState(600);
-  const [isEnding, setIsEnding] = useState(false);
+const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
-  const { localParticipant } = useLocalParticipant();
-  const videoRef = useRef<HTMLVideoElement>(null);
-  // localVideoTrack state removed
-  
-  const room = useRoomContext();
+function Setup({ onStart, loading, error }: { onStart: (topic: string, camera: boolean) => void; loading: boolean; error: string | null }) {
+  const [domain, setDomain] = useState('Technical');
+  const [subtopic, setSubtopic] = useState(DOMAINS.Technical[0]);
+  const [camera, setCamera] = useState(false);
 
-  const handleStopSession = async () => {
-    if (isEnding) return;
-    setIsEnding(true);
-    try {
-      const data = new TextEncoder().encode(JSON.stringify({ type: 'end_session' }));
-      await room.localParticipant.publishData(data, { reliable: true });
-    } catch (e) {
-      console.error(e);
-    }
+  const pickDomain = (d: string) => {
+    setDomain(d);
+    setSubtopic(DOMAINS[d][0]);
   };
 
+  return (
+    <main className="setup">
+      <Brand />
+      <h1>Practice a 10-minute voice interview</h1>
+      <p className="lead">
+        Explain a topic out loud. The AI interviewer listens, asks one follow-up at a time, and adapts the difficulty to your answers.
+        You get a scored report at the end.
+      </p>
+
+      <section className="card">
+        <h2 className="step">1. Choose a domain</h2>
+        <div className="segmented" role="tablist">
+          {Object.keys(DOMAINS).map(d => (
+            <button key={d} role="tab" aria-selected={domain === d} className={domain === d ? 'on' : ''} onClick={() => pickDomain(d)}>
+              {d}
+            </button>
+          ))}
+        </div>
+
+        <h2 className="step">2. Pick a topic</h2>
+        <div className="chips">
+          {DOMAINS[domain].map(t => (
+            <button key={t} className={`chip ${subtopic === t ? 'on' : ''}`} aria-pressed={subtopic === t} onClick={() => setSubtopic(t)}>
+              {t}
+            </button>
+          ))}
+        </div>
+
+        <label className="toggle">
+          <input type="checkbox" checked={camera} onChange={e => setCamera(e.target.checked)} />
+          Show my camera preview (stays on your device)
+        </label>
+
+        {error && <p className="error" role="alert">{error}</p>}
+
+        <button className="btn btn-primary btn-block" disabled={loading} onClick={() => onStart(`${domain}: ${subtopic}`, camera)}>
+          {loading ? 'Connecting…' : `Start interview on ${subtopic}`}
+        </button>
+        <p className="hint">Your microphone will be used. Use headphones for the best experience.</p>
+      </section>
+
+      <ol className="how">
+        <li><b>Listen</b> The interviewer hears your full explanation without interrupting.</li>
+        <li><b>Adapt</b> Strong answers get harder questions; weak ones get simpler ones.</li>
+        <li><b>Report</b> Technical, communication and confidence scores with next steps.</li>
+      </ol>
+    </main>
+  );
+}
+
+function CameraPreview() {
+  const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
-    if (!hasStarted) return;
-    const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-           clearInterval(timer);
-           return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [hasStarted]);
-
-  useEffect(() => {
-    const handleData = (payload: Uint8Array) => {
-      try {
-        const msg = JSON.parse(new TextDecoder().decode(payload));
-        if (msg.type === 'report') {
-          onReportReceived(msg.content);
-        }
-      } catch (e) {
-        console.error("Failed to parse data message", e);
-      }
-    };
-    room.on(RoomEvent.DataReceived, handleData);
-    return () => { room.off(RoomEvent.DataReceived, handleData); };
-  }, [room, onReportReceived]);
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  // User webcam initialization
-  useEffect(() => {
-    let track: LocalVideoTrack | null = null;
-    const startVideo = async () => {
-      if (webcamEnabled && !videoOff) {
-        try {
-          track = await createLocalVideoTrack();
-          if (videoRef.current) {
-            track.attach(videoRef.current);
-          }
-          await localParticipant.publishTrack(track);
-        } catch (e) {
-          console.error('Failed to publish webcam', e);
-        }
-      }
-    };
-    startVideo();
-    return () => {
-      if (track) {
-        track.stop();
-        localParticipant.unpublishTrack(track);
-      }
-    };
-  }, [webcamEnabled, videoOff, localParticipant]);
-
-  const handleAvatarReady = useCallback(() => {
-    setAvatarReady(true);
+    let stream: MediaStream | undefined;
+    navigator.mediaDevices?.getUserMedia({ video: true }).then(s => {
+      stream = s;
+      if (ref.current) ref.current.srcObject = s;
+    }).catch(() => { /* preview is optional */ });
+    return () => stream?.getTracks().forEach(t => t.stop());
   }, []);
+  return <video ref={ref} className="pip" autoPlay playsInline muted />;
+}
 
-  const handleStartSession = () => {
-    setHasStarted(true);
-    localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ type: 'start_interview' })), { reliable: true });
-  };
+function Transcript() {
+  const { localParticipant } = useLocalParticipant();
+  const lines = useTranscriptions();
+  const ref = useRef<HTMLDivElement>(null);
 
-  const toggleMic = () => {
-    setMicMuted(!micMuted);
-    localParticipant.setMicrophoneEnabled(micMuted);
-  };
-
-  const toggleCamera = () => {
-    setVideoOff(!videoOff);
-  };
+  useEffect(() => {
+    ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: 'smooth' });
+  }, [lines]);
 
   return (
-    <div className="dashboard-app">
-      {/* Navbar Header */}
-      <div className="navbar">
-        <div className="brand-logo">
-          <div className="brand-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-            </svg>
-          </div>
-          <span>TALKFLOW</span>
-        </div>
+    <aside className="panel">
+      <h2 className="panel-title">Live transcript</h2>
+      <div className="transcript" ref={ref} aria-live="polite">
+        {lines.length === 0 && <p className="muted">The conversation will appear here once the interview starts.</p>}
+        {lines.map(l => {
+          const you = l.participantInfo.identity === localParticipant.identity;
+          return (
+            <div key={l.streamInfo.id} className={`line ${you ? 'you' : 'ai'}`}>
+              <span className="who">{you ? 'You' : 'Interviewer'}</span>
+              <p>{l.text}</p>
+            </div>
+          );
+        })}
       </div>
+    </aside>
+  );
+}
 
-      {/* Page Sub-Header */}
-      <div className="page-header">
-        <div className="header-title-area">
-          <button className="back-btn" onClick={onEndSession}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 12H5M12 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <div className="header-text">
-            <h1>Session - {topicObj.title}</h1>
-            <p>Summary of candidate interaction, real-time metrics, and AI speech analysis.</p>
-          </div>
-          {hasStarted && (
-            <div style={{ marginLeft: '1.5rem', background: 'rgba(239, 68, 68, 0.1)', color: '#F87171', padding: '0.4rem 1rem', borderRadius: '2rem', fontWeight: 600, border: '1px solid rgba(239, 68, 68, 0.3)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-              </svg>
-              {formatTime(timeLeft)}
+function Interview({ topic, camera, onReport, onLeave }: {
+  topic: string;
+  camera: boolean;
+  onReport: (report: string) => void;
+  onLeave: () => void;
+}) {
+  const { state, videoTrack, agent } = useVoiceAssistant();
+  const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
+  const [started, setStarted] = useState(false);
+  const [ending, setEnding] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS);
+  const [cameraOn, setCameraOn] = useState(camera);
+  const [slowAgent, setSlowAgent] = useState(false);
+
+  useDataChannel(msg => {
+    try {
+      const data = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (data.type === 'report') onReport(data.content);
+    } catch { /* ignore non-JSON messages */ }
+  });
+
+  useEffect(() => {
+    if (agent) return;
+    const t = setTimeout(() => setSlowAgent(true), 15000);
+    return () => clearTimeout(t);
+  }, [agent]);
+
+  useEffect(() => {
+    if (!started) return;
+    const t = setInterval(() => setTimeLeft(s => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [started]);
+
+  useEffect(() => {
+    if (timeLeft === 0) setEnding(true); // the agent wraps up on its own timer
+  }, [timeLeft]);
+
+  const send = (type: string) =>
+    localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ type })), { reliable: true });
+
+  const begin = () => {
+    setStarted(true);
+    send('start_interview');
+  };
+
+  const end = () => {
+    if (!started) return onLeave();
+    if (ending) return;
+    setEnding(true);
+    send('end_session');
+  };
+
+  const status = ending ? 'Wrapping up' : !started ? (agent ? 'Ready' : 'Connecting') : STATUS[state] ?? 'Connecting';
+  const tone = ending || !started ? 'idle' : state;
+
+  return (
+    <div className="session">
+      <header className="topbar">
+        <Brand />
+        <div className="topic" title={topic}>{topic}</div>
+        <div className={`status status-${tone}`}><span className="dot" />{status}</div>
+        <div className="timer" aria-label="Time remaining">
+          <span>{formatTime(timeLeft)}</span>
+          <div className="timer-bar"><div style={{ width: `${(timeLeft / SESSION_SECONDS) * 100}%` }} /></div>
+        </div>
+      </header>
+
+      <div className="session-grid">
+        <section className={`stage stage-${tone}`}>
+          {videoTrack ? (
+            <VideoTrack trackRef={videoTrack} className="avatar" />
+          ) : (
+            <div className="avatar-fallback">
+              <div className="orb" />
+              <p>{agent ? 'Avatar unavailable. Audio interview active.' : 'Connecting your interviewer…'}</p>
             </div>
           )}
-        </div>
 
-        <div className="action-buttons">
-          {!hasStarted && avatarReady && (
-            <button className="btn-primary-green" onClick={handleStartSession}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
-              Start Practice Session
+          {cameraOn && <CameraPreview />}
+
+          {!started && !ending && (
+            <div className="overlay">
+              {agent ? (
+                <>
+                  <h2>Your interviewer is ready</h2>
+                  <p>Find a quiet spot. When you click start, the 10-minute timer begins.</p>
+                  <button className="btn btn-primary" onClick={begin}>Start interview</button>
+                </>
+              ) : (
+                <>
+                  <div className="spinner" />
+                  <h2>Connecting your interviewer…</h2>
+                  {slowAgent && <p className="warn">This is taking longer than usual. Make sure the agent worker is running (<code>python -m app.main dev</code>).</p>}
+                </>
+              )}
+            </div>
+          )}
+
+          {ending && (
+            <div className="overlay">
+              <div className="spinner" />
+              <h2>Preparing your report</h2>
+              <p>The interviewer is analysing your answers. This takes a few seconds.</p>
+            </div>
+          )}
+
+          <div className="controls">
+            <button
+              className={`ctl ${isMicrophoneEnabled ? '' : 'off'}`}
+              onClick={() => localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled)}
+              aria-label={isMicrophoneEnabled ? 'Mute microphone' : 'Unmute microphone'}
+              title={isMicrophoneEnabled ? 'Mute' : 'Unmute'}
+            >
+              <Icon name={isMicrophoneEnabled ? 'mic' : 'micOff'} />
             </button>
-          )}
-
-          <button className="btn-secondary" onClick={handleStopSession} disabled={isEnding}>
-            {isEnding ? (
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span className="speaking-pulse" style={{ width: '12px', height: '12px', background: '#94A3B8', borderRadius: '50%' }}></span>
-                Generating Report...
-              </span>
-            ) : (
-              <>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
-                Stop Session
-              </>
-            )}
-          </button>
-
-          {hasStarted && (
-            <button className="btn-primary-red">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M23 7l-7 5 7 5V7z" />
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-              Live Recording
+            <button
+              className={`ctl ${cameraOn ? '' : 'off'}`}
+              onClick={() => setCameraOn(!cameraOn)}
+              aria-label={cameraOn ? 'Hide camera preview' : 'Show camera preview'}
+              title="Camera preview"
+            >
+              <Icon name={cameraOn ? 'cam' : 'camOff'} />
             </button>
-          )}
-        </div>
-      </div>
-
-      {/* Main Split Grid */}
-      <div className="dashboard-grid">
-        {/* Left Column (Video & AI Summary) */}
-        <div className="left-column">
-          {/* Main Video Frame */}
-          <div className="video-frame">
-            {/* AI Avatar Badge Top-Left */}
-            <div className="participant-badge">
-              <div className="avatar-circle">AI</div>
-              <span>Mrs. Tania Shahira (AI Coach)</span>
-            </div>
-
-            {/* User PIP Top-Right */}
-            {webcamEnabled && !videoOff && (
-              <div className="user-pip">
-                <video ref={videoRef} autoPlay playsInline muted />
-                <div className="pip-badge">
-                  <div className="pip-avatar">RT</div>
-                  <span>You</span>
-                </div>
-                <div className="pip-audio-icon">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  </svg>
-                </div>
-              </div>
-            )}
-
-            {/* Avatar Video Feed */}
-            <AvatarView onAvatarReady={handleAvatarReady} />
-
-            {/* Video Controls Overlay */}
-            <div className="video-controls">
-              <button className={`control-btn ${micMuted ? 'active-off' : ''}`} onClick={toggleMic} title="Mute/Unmute">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                </svg>
-              </button>
-              <button className={`control-btn ${videoOff ? 'active-off' : ''}`} onClick={toggleCamera} title="Camera On/Off">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M23 7l-7 5 7 5V7z" />
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                </svg>
-              </button>
-              <button className="control-btn" title="Live Captions">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </button>
-              <button className="control-btn-end" onClick={handleStopSession} title="End Call" disabled={isEnding}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.8 19.8 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 2.59 3.4z" transform="rotate(135 12 12)"/>
-                </svg>
-              </button>
-            </div>
+            <button className="ctl ctl-end" onClick={end} disabled={ending} title={started ? 'End interview and get report' : 'Leave'}>
+              <Icon name="end" /> <span>{started ? 'End & get report' : 'Leave'}</span>
+            </button>
           </div>
+          <StartAudio label="Click to enable interviewer audio" className="start-audio" />
+        </section>
 
-          {/* Bottom Card: Meeting Notes & AI Live Summary */}
-          <div className="notes-card">
-            <div className="notes-header">
-              <h3>Key Session Notes - {topicObj.title}</h3>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2">
-                <circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" />
-              </svg>
-            </div>
-
-            <div className="tags-row">
-              <div className="tag-pill">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-                  <line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-                </svg>
-                {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-              </div>
-              <div className="tag-pill">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
-                </svg>
-                {topicObj.title}
-              </div>
-              <div className="tag-pill">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="9" cy="7" r="4" />
-                </svg>
-                Mrs. Tania Shahira, You
-              </div>
-            </div>
-
-            <div className="ai-summary-box">
-              <div className="ai-summary-title">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-                </svg>
-                AI Summary of Session
-              </div>
-              <div className="ai-summary-text">
-                {hasStarted 
-                  ? `The discussion focuses on ${topicObj.title}. The candidate is actively exploring concepts, structure, and articulation. Feedback is being generated in real-time.`
-                  : "Click 'Start Practice Session' to initiate the speech analysis and conversation flow with your AI Coach."
-                }
-              </div>
-            </div>
-          </div>
-        </div>
+        <Transcript />
       </div>
-
-      <CustomAudioRenderer />
+      <RoomAudioRenderer />
     </div>
   );
 }
 
-function App() {
-  const [connected, setConnected] = useState(false);
-  const [connectionInfo, setConnectionInfo] = useState<{ token: string; url: string } | null>(null);
+const SCORE_RE = /##\s*(Technical|Communication|Confidence) Score[\s\S]*?\*\*Score:\*\*\s*(\d{1,3})/gi;
+
+function Report({ report, topic, onRestart }: { report: string; topic: string; onRestart: () => void }) {
+  const scores = [...report.matchAll(SCORE_RE)].map(m => ({ label: m[1], value: Math.min(100, Number(m[2])) }));
+  const grade = (v: number) => (v >= 75 ? 'good' : v >= 50 ? 'ok' : 'low');
+
+  return (
+    <main className="report">
+      <div className="report-head">
+        <Brand />
+        <div className="report-actions">
+          <button className="btn btn-ghost" onClick={() => window.print()}>Save as PDF</button>
+          <button className="btn btn-primary" onClick={onRestart}>New interview</button>
+        </div>
+      </div>
+      <h1>Interview report</h1>
+      <p className="lead">{topic}</p>
+
+      {scores.length > 0 && (
+        <div className="scores">
+          {scores.map(s => (
+            <div key={s.label} className={`score score-${grade(s.value)}`}>
+              <span className="score-label">{s.label}</span>
+              <span className="score-value">{s.value}<small>/100</small></span>
+              <div className="score-bar"><div style={{ width: `${s.value}%` }} /></div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <article className="card markdown">
+        <ReactMarkdown>{report.replace(/^\s*#\s.*\n/, '')}</ReactMarkdown>
+      </article>
+    </main>
+  );
+}
+
+export default function App() {
+  const [conn, setConn] = useState<{ token: string; url: string; topic: string; camera: boolean } | null>(null);
+  const [report, setReport] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [reportData, setReportData] = useState<string | null>(null);
-  
-  const [selectedTopicId, setSelectedTopicId] = useState(TOPICS[0].id);
-  const [webcamEnabled, setWebcamEnabled] = useState(true);
+  // True once a report arrived or the user left: the following disconnect is expected.
+  const settled = useRef(false);
 
-  const currentTopicObj = TOPICS.find(t => t.id === selectedTopicId) || TOPICS[0];
-
-  const handleConnect = useCallback(async () => {
+  const start = async (topic: string, camera: boolean) => {
+    settled.current = false;
     setLoading(true);
     setError(null);
     try {
-      const roomName = `interview-${Date.now()}`;
-      const identity = `user-${Date.now()}`;
-      
-      const topicWithContext = `${currentTopicObj.title}. Topics to cover: ${currentTopicObj.desc}`;
-      
-      const resp = await fetch(
-        `${TOKEN_SERVER_URL}/api/token?room=${roomName}&identity=${identity}&topic=${encodeURIComponent(topicWithContext)}`
-      );
-      
-      if (!resp.ok) {
-        throw new Error(`Token server returned ${resp.status}`);
-      }
-      
+      const id = crypto.randomUUID().slice(0, 8);
+      const params = new URLSearchParams({ room: `interview-${id}`, identity: `candidate-${id}`, topic });
+      const resp = await fetch(`${TOKEN_SERVER_URL}/api/token?${params}`);
+      if (!resp.ok) throw new Error(`token server returned ${resp.status}`);
       const data = await resp.json();
-      setConnectionInfo({ token: data.token, url: data.url });
-      setConnected(true);
-      setReportData(null);
-    } catch (e: any) {
-      setError(`Could not connect: ${e.message}. Ensure token server is running.`);
+      setConn({ token: data.token, url: data.url, topic, camera });
+    } catch (e) {
+      setError(`Could not connect: ${(e as Error).message}. Is the token server running?`);
     } finally {
       setLoading(false);
     }
-  }, [currentTopicObj]);
-
-  const handleEndSession = () => {
-    setConnected(false);
-    setConnectionInfo(null);
   };
 
-  const handleRestart = () => {
-    setReportData(null);
-    setConnected(false);
-    setConnectionInfo(null);
-  };
-
-  if (reportData) {
-    return <ReportScreen reportData={reportData} onRestart={handleRestart} />;
+  if (report && conn) {
+    return <Report report={report} topic={conn.topic} onRestart={() => { setReport(null); setConn(null); }} />;
   }
 
+  if (!conn) return <Setup onStart={start} loading={loading} error={error} />;
+
   return (
-    <div className="app-container" style={{ width: '100%' }}>
-      {!connected || !connectionInfo ? (
-        <div className="setup-container">
-          <h2>TalkFlow AI — Communication Practice</h2>
-          <p>Select your topic and prepare for your AI coaching session.</p>
-
-          <div className="topic-options">
-            {TOPICS.map(topic => (
-              <div 
-                key={topic.id} 
-                className={`topic-box ${selectedTopicId === topic.id ? 'selected' : ''}`}
-                onClick={() => setSelectedTopicId(topic.id)}
-              >
-                <h4>{topic.title}</h4>
-                <p>{topic.desc}</p>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginBottom: '2rem' }}>
-            <input 
-              type="checkbox" 
-              id="webcamCheck"
-              checked={webcamEnabled}
-              onChange={(e) => setWebcamEnabled(e.target.checked)}
-              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-            />
-            <label htmlFor="webcamCheck" style={{ fontSize: '0.9rem', fontWeight: 500, cursor: 'pointer', color: '#475569' }}>
-              Enable User Webcam (Picture-in-Picture)
-            </label>
-          </div>
-
-          {error && <p style={{ color: '#EF4444', marginBottom: '1rem', fontSize: '0.9rem' }}>{error}</p>}
-
-          <button className="btn-primary-green" onClick={handleConnect} disabled={loading} style={{ width: '100%', padding: '0.9rem', fontSize: '1rem', justifyContent: 'center' }}>
-            {loading ? 'Connecting to Room...' : 'Enter Session Dashboard'}
-          </button>
-        </div>
-      ) : (
-        <LiveKitRoom
-          serverUrl={connectionInfo.url}
-          token={connectionInfo.token}
-          connect={true}
-          audio={true}
-          video={false}
-          onDisconnected={handleEndSession}
-        >
-          <SessionDashboard
-            topicObj={currentTopicObj}
-            webcamEnabled={webcamEnabled}
-            onEndSession={handleEndSession}
-            onReportReceived={setReportData}
-          />
-        </LiveKitRoom>
-      )}
-    </div>
+    <LiveKitRoom
+      serverUrl={conn.url}
+      token={conn.token}
+      connect
+      audio
+      video={false}
+      onDisconnected={() => {
+        if (settled.current) return;
+        setConn(null);
+        setError('The session ended before a report was produced.');
+      }}
+      onMediaDeviceFailure={() => setError('Microphone access was blocked. Allow it in your browser and try again.')}
+    >
+      {error && <div className="toast" role="alert">{error}</div>}
+      <Interview
+        topic={conn.topic}
+        camera={conn.camera}
+        onReport={r => { settled.current = true; setReport(r); }}
+        onLeave={() => { settled.current = true; setConn(null); }}
+      />
+    </LiveKitRoom>
   );
 }
-
-export default App;

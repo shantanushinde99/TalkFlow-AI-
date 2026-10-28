@@ -197,6 +197,8 @@ Do not use emojis.
 
 Do not use bullet points while speaking.
 
+Everything you say is converted to speech. Never use markdown, lists, code blocks, or symbols that cannot be read aloud.
+
 ---
 
 # WHEN THE USER ASKS A QUESTION
@@ -348,6 +350,9 @@ Write a concise 2–4 paragraph summary describing:
 - What the candidate should focus on next for {topic}
 
 Interview Topic: {topic}
+
+Measured speaking metrics (use these when scoring Communication and Confidence; mention them where relevant):
+{metrics}
 
 Interview Transcript:
 

@@ -3,183 +3,155 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(env_path)  # Bulletproof load for IPC child processes
 
+import asyncio
 import json
 import logging
-import asyncio
 
-from livekit.agents import AgentServer, cli, JobContext, AutoSubscribe
+from livekit import rtc
+from livekit.agents import AgentServer, AgentSession, AutoSubscribe, JobContext, JobProcess, cli
 from livekit.agents.voice import Agent
-from livekit.agents import AgentSession
-from livekit.plugins import groq, openai, deepgram, elevenlabs, bey, silero
+from livekit.plugins import bey, deepgram, elevenlabs, groq, silero
 
-from app.config import AVATAR_ID
-from app.session import Session
-from app.prompts import SYSTEM_PROMPT, EVALUATION_PROMPT
+from app.evaluator import collect_transcript, generate_report
+from app.prompts import SYSTEM_PROMPT
+from app.session import SESSION_SECONDS, Session
 
 logger = logging.getLogger("interviewer")
 
+AVATAR_ID = "694c83e2-8895-4a98-bd16-56332ca3f449"
+CONVERSATION_MODEL = "llama-3.3-70b-versatile"
+
+
+def prewarm(proc: JobProcess) -> None:
+    """Load the VAD model once per worker process instead of once per interview."""
+    proc.userdata["vad"] = silero.VAD.load()
+
+
 server = AgentServer()
+server.setup_fnc = prewarm
+
+
+def build_tts():
+    """ElevenLabs per the MVP spec; Deepgram Aura when no ElevenLabs key is configured."""
+    key = os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("ELEVEN_API_KEY")
+    if key:
+        return elevenlabs.TTS(api_key=key)
+    logger.warning("ELEVENLABS_API_KEY not set, falling back to Deepgram TTS")
+    return deepgram.TTS(model="aura-2-delia-en")
+
 
 @server.rtc_session()
 async def entrypoint(ctx: JobContext):
-    """Main entrypoint for the LiveKit agent."""
-    logger.info("Job received! Starting agent session...")
-
-    session = Session()
-
-    # Connect to room
+    """One interview: wait for the candidate, interview for 10 minutes, publish the report."""
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-    logger.info("Connected to room: %s", ctx.room.name)
+    candidate = await ctx.wait_for_participant()
 
-    # Extract topic from user participant metadata
-    topic = "General"
-    for p in ctx.room.remote_participants.values():
-        if p.metadata:
-            try:
-                meta = json.loads(p.metadata)
-                if "topic" in meta:
-                    topic = meta["topic"]
-            except Exception as e:
-                logger.warning("Could not parse participant metadata: %s", e)
+    try:
+        topic = json.loads(candidate.metadata or "{}").get("topic") or "General"
+    except json.JSONDecodeError:
+        topic = "General"
+    session = Session(topic=topic)
+    logger.info("Interview topic: %s", topic)
 
-    logger.info("Interview Topic: %s", topic)
-
-    # Setup the agent and agent session (Direct Mistral API for live conversation)
     agent_session = AgentSession(
-        vad=silero.VAD.load(),
+        vad=ctx.proc.userdata["vad"],
         stt=deepgram.STT(),
-        llm=openai.LLM(
-            model="mistral-small-latest",
-            base_url="https://api.mistral.ai/v1",
-            api_key=os.environ.get("MISTRAL_API_KEY"),
-        ),
-        tts=deepgram.TTS(model="aura-2-delia-en"),
+        llm=groq.LLM(model=CONVERSATION_MODEL),
+        tts=build_tts(),
+        # Give candidates room to pause mid-explanation without being cut off.
+        turn_handling={"endpointing": {"min_delay": 0.8}},
     )
 
-    # Add topic context to system prompt
-    custom_instructions = f"{SYSTEM_PROMPT}\n\nThe candidate has chosen to be interviewed on the following topic: {topic}. Please start the interview by mentioning this topic."
-    agent = Agent(instructions=custom_instructions)
+    @agent_session.on("user_input_transcribed")
+    def on_transcript(ev):
+        if ev.is_final:
+            session.add_user_text(ev.transcript)
 
-    # Start the agent session
-    await agent_session.start(agent=agent, room=ctx.room)
-    logger.info("Agent session started.")
+    @agent_session.on("user_state_changed")
+    def on_user_state(ev):
+        if ev.new_state == "speaking":
+            session.user_speaking(ev.created_at)
+        elif ev.old_state == "speaking":
+            session.user_stopped(ev.created_at)
 
-    # Initialize and start Beyond Presence Avatar (with graceful fallback if quota/API fails)
-    try:
-        avatar = bey.AvatarSession(avatar_id=AVATAR_ID)
-        await avatar.start(agent_session, room=ctx.room)
-        logger.info("Avatar started successfully.")
-    except Exception as e:
-        logger.warning("Beyond Presence Avatar failed to start (Audio voice agent will continue): %s", e)
+    @agent_session.on("agent_state_changed")
+    def on_agent_state(ev):
+        if ev.new_state == "listening" and ev.old_state == "speaking":
+            session.agent_listening(ev.created_at)
 
-    # Wait for the frontend to send the "start" signal
-    start_future = asyncio.Future()
+    ending = False
 
-    from livekit.agents import llm as agents_llm
-
-    session_ended = False
-
-    async def generate_and_send_report():
-        logger.info("Generating report...")
-        # Build transcript from conversation history
-        transcript = ""
-        messages = agent_session.history.messages() if hasattr(agent_session.history, "messages") and callable(agent_session.history.messages) else []
-        for msg in messages:
-            role = getattr(msg, "role", "unknown")
-            if role != "system":
-                text = getattr(msg, "text", "") or ""
-                if not text and hasattr(msg, "content"):
-                    content = msg.content
-                    if isinstance(content, list):
-                        text = " ".join([c.text for c in content if hasattr(c, "text") and c.text])
-                    elif isinstance(content, str):
-                        text = content
-                if text and text.strip():
-                    transcript += f"{role.capitalize()}: {text.strip()}\n"
-        
-        logger.info("Captured transcript length: %d chars", len(transcript))
-        logger.debug("Transcript content:\n%s", transcript)
-
-        report_ctx = agents_llm.ChatContext()
-        report_ctx.add_message(
-            role="user",
-            content=EVALUATION_PROMPT.format(topic=topic, transcript=transcript)
-        )
-        
-        try:
-            llm_inst = groq.LLM(model="openai/gpt-oss-120b", api_key=os.environ.get("GROQ_API_KEY"))
-            stream = llm_inst.chat(chat_ctx=report_ctx)
-            
-            report_text = ""
-            async for chunk in stream:
-                if chunk.delta and chunk.delta.content:
-                    report_text += chunk.delta.content
-            
-            logger.info("Report generated successfully.")
-            payload = json.dumps({"type": "report", "content": report_text}).encode("utf-8")
-            await ctx.room.local_participant.publish_data(payload, reliable=True)
-            
-        except Exception as e:
-            logger.error(f"Error generating report: {e}")
-            payload = json.dumps({"type": "report", "content": "Failed to generate AI report due to an error."}).encode("utf-8")
-            await ctx.room.local_participant.publish_data(payload, reliable=True)
-
-    async def end_session_flow(is_timeout=False):
-        nonlocal session_ended
-        if session_ended:
+    async def finish(closing_line: str):
+        nonlocal ending
+        if ending:
             return
-        session_ended = True
-        
-        if is_timeout:
-            logger.info("Session time is up.")
-            agent_session.say(
-                "Our 10 minutes are up. Thank you for the discussion! I am generating your evaluation report now.",
-                allow_interruptions=False,
-            )
-            await asyncio.sleep(10)
-        else:
-            logger.info("Session ended early by user.")
-            agent_session.say(
-                "Thank you for the discussion! I am generating your evaluation report now.",
-                allow_interruptions=False,
-            )
-            await asyncio.sleep(10)
-            
-        await generate_and_send_report()
-        await asyncio.sleep(2)
-        await ctx.room.disconnect()
+        ending = True
+        # Stop listening and answering; the interview is over.
+        agent_session.input.set_audio_enabled(False)
+        agent_session.interrupt()
+        try:
+            await agent_session.say(closing_line, allow_interruptions=False)
+        except Exception as e:
+            logger.warning("Closing line failed: %s", e)
+
+        try:
+            transcript = collect_transcript(agent_session.history, session)
+            report = await generate_report(session, transcript)
+        except Exception as e:
+            logger.exception("Report generation failed: %s", e)
+            report = "# Interview Evaluation Report\n\nSorry, the report could not be generated. Please try another session."
+
+        await ctx.room.local_participant.publish_data(
+            json.dumps({"type": "report", "content": report}).encode("utf-8"), reliable=True
+        )
+        await asyncio.sleep(2)  # let the report reach the client before leaving
+        ctx.shutdown("interview finished")
+
+    # Registered before the slow startup below (session + avatar) so the start signal can't be missed.
+    started = asyncio.Event()
 
     @ctx.room.on("data_received")
-    def on_data_received(data_packet):
+    def on_data_received(packet: rtc.DataPacket):
         try:
-            msg = json.loads(data_packet.data.decode("utf-8"))
-            if msg.get("type") == "start_interview":
-                if not start_future.done():
-                    start_future.set_result(True)
-            elif msg.get("type") == "end_session":
-                asyncio.create_task(end_session_flow(is_timeout=False))
-        except Exception as e:
-            pass
+            msg = json.loads(packet.data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        if msg.get("type") == "start_interview":
+            started.set()
+        elif msg.get("type") == "end_session":
+            asyncio.create_task(finish("Thanks for the discussion. Give me a moment while I prepare your evaluation report."))
 
-    logger.info("Waiting for user to click Begin Interview...")
-    await start_future
-    logger.info("Start signal received! Beginning interview.")
+    instructions = (
+        f"{SYSTEM_PROMPT}\n\nThe candidate chose this interview topic: {topic}. "
+        "Keep every question within this topic."
+    )
+    await agent_session.start(agent=Agent(instructions=instructions), room=ctx.room)
 
-    # Say hello initially
+    try:
+        await bey.AvatarSession(avatar_id=AVATAR_ID).start(agent_session, room=ctx.room)
+        logger.info("Avatar started.")
+    except Exception as e:
+        logger.warning("Beyond Presence avatar failed to start, continuing audio-only: %s", e)
+
+    logger.info("Waiting for the candidate to start...")
+    await started.wait()
+
     agent_session.say(
-        f"Hi! Today we'll have a discussion on {topic}. "
-        "I'll ask you questions to understand your knowledge and communication skills. "
-        "There are no trick questions, so just explain your thinking as clearly as you can. "
-        "Let's begin. Could you briefly explain what you know about this topic?",
+        f"Hi! Today we'll talk about {topic}. I'll ask questions to understand how you think and how you explain things. "
+        "There are no trick questions, so just reason out loud. To start, what do you already know about this topic?",
         allow_interruptions=True,
     )
 
-    # 10-minute session timeout starts NOW
-    async def session_timeout():
-        await asyncio.sleep(600)
-        await end_session_flow(is_timeout=True)
+    async def timeout():
+        await asyncio.sleep(SESSION_SECONDS)
+        await finish("Our ten minutes are up. Thank you for the discussion. I'm preparing your evaluation report now.")
 
-    timeout_task = asyncio.create_task(session_timeout())
+    timer = asyncio.create_task(timeout())
+
+    async def cancel_timer():
+        timer.cancel()
+
+    ctx.add_shutdown_callback(cancel_timer)
 
 
 if __name__ == "__main__":

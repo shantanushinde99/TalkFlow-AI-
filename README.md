@@ -11,7 +11,9 @@ The system adapts to the user's answers in real-time—increasing difficulty aft
 ## 🚀 Features
 
 - **Ultra-Low Latency Voice Chat**: Fully streaming audio pipeline from speech-to-text to LLM inference to text-to-speech.
-- **Dual-LLM Engine Architecture**: Uses **Mistral AI** (`mistral-small-latest`) for real-time natural conversation and **Groq** (`openai/gpt-oss-120b`) for thorough, high-speed report evaluation.
+- **Groq-powered LLMs**: `llama-3.3-70b-versatile` for the real-time conversation and `openai/gpt-oss-120b` for the final report.
+- **Live status & transcript**: The UI shows whether the interviewer is Listening, Thinking or Speaking, a live transcript, and the remaining time.
+- **Measured communication metrics**: Speaking pace (wpm), filler words and long pauses are measured from the audio pipeline and fed into the report.
 - **Adaptive Questioning**: The AI evaluates answers on the fly and dynamically adjusts the interview difficulty.
 - **Immersive AI Avatar with Audio Fallback**: A real-time video avatar that lip-syncs to the AI's generated voice, equipped with automatic fallback to pure audio mode if avatar limits are reached.
 - **Domain-Tailored Evaluation**: Automatically generates a detailed Markdown report scoring Technical Knowledge, Communication, and Confidence customized specifically to the user's chosen interview topic.
@@ -21,12 +23,10 @@ The system adapts to the user's answers in real-time—increasing difficulty aft
 
 ## 🎯 Current Evaluation Topics
 
-The system allows candidates to select specific domain topics for evaluation, including:
+Candidates pick a domain and a topic (edit `DOMAINS` in `frontend/src/App.tsx` to change them):
 
-1. **Artificial Intelligence**: LLMs, AI ethics, agent autonomy, and model deployment.
-2. **Trading & Finance**: Market trends, algorithmic trading execution, and portfolio risk management.
-3. **Computer Science**: System design, distributed architecture, caching, and frontend optimization.
-4. **General Communication**: Clarity of thought, structured speaking (Pyramid Principle), and conflict resolution.
+1. **Technical**: Artificial Intelligence, LLMs, Transformers, Prompt Engineering, DSA, Operating Systems, DBMS, Computer Networks, OOP, System Design.
+2. **Trading**: Liquidity, Support and Resistance, Market Structure, Price Action, Candlestick Patterns, Risk Management, Supply and Demand, Order Blocks, BOS, CHOCH.
 
 ---
 
@@ -51,8 +51,8 @@ graph TD
         Agent[LiveKit Agent]
         VAD[Silero VAD]
         STT[Deepgram STT]
-        LLM[Mistral AI API]
-        TTS[Deepgram TTS]
+        LLM[Groq LLM]
+        TTS[ElevenLabs TTS]
         Avatar[Beyond Presence Avatar]
         Evaluator[Groq LLM Evaluator]
     end
@@ -86,8 +86,8 @@ graph TD
     subgraph AI_Processing_Pipeline [Python Backend]
         VAD[Silero VAD<br/>Detects Speech Activity]
         STT[Deepgram STT<br/>Streams Audio to Text]
-        LLM[Mistral AI API<br/>mistral-small-latest]
-        TTS[Deepgram TTS<br/>aura-2-delia-en Synthesis]
+        LLM[Groq<br/>llama-3.3-70b-versatile]
+        TTS[ElevenLabs<br/>Streaming TTS]
         BEY[Beyond Presence<br/>Calculates Lip-Sync]
     end
 
@@ -116,8 +116,8 @@ graph TD
 
 1. **Voice Activity Detection (VAD)**: The user's audio is streamed to the backend via WebRTC. **Silero VAD** monitors the stream to detect when the user starts and stops speaking.
 2. **Speech-to-Text (STT)**: Once speech is detected, the audio is routed to **Deepgram STT**, which transcribes the audio into text in real-time.
-3. **Conversational LLM**: The transcript is fed into **Mistral AI** (`mistral-small-latest`), which evaluates the response and asks a focused follow-up question.
-4. **Text-to-Speech (TTS)**: As Mistral streams text response back, it is fed into **Deepgram TTS** (`aura-2-delia-en`).
+3. **Conversational LLM**: The transcript is fed into **Groq** (`llama-3.3-70b-versatile`), which evaluates the response and asks a focused follow-up question.
+4. **Text-to-Speech (TTS)**: The streamed reply is synthesized by **ElevenLabs** (falls back to Deepgram Aura when `ELEVENLABS_API_KEY` is not set).
 5. **Playback**: The synthesized audio is streamed back through LiveKit directly to the user.
 
 ---
@@ -125,7 +125,7 @@ graph TD
 ## 👤 Avatar & Fallback Handling
 
 1. **Initialization**: An `AvatarSession` is spawned alongside the voice agent.
-2. **Audio & Lip Sync**: The avatar intercepts Deepgram TTS audio and generates real-time video synchronized to the speech.
+2. **Audio & Lip Sync**: The avatar intercepts the TTS audio and generates real-time video synchronized to the speech.
 3. **Graceful Fallback**: If Beyond Presence API quota is reached or unavailable, the backend seamlessly falls back to audio-only voice agent mode, ensuring uninterrupted interview sessions.
 
 ---
@@ -134,7 +134,7 @@ graph TD
 
 When the session completes:
 1. The backend extracts the conversation transcript from `agent_session.history.messages()`.
-2. It passes both the **Interview Topic** and **Transcript** into a domain-tailored Evaluation Prompt.
+2. It passes the **Interview Topic**, **Transcript** and **measured speaking metrics** into a domain-tailored Evaluation Prompt.
 3. **Groq** (`openai/gpt-oss-120b`) generates a structured Markdown report scoring:
    - **Technical / Domain Understanding** (tailored specifically to the chosen topic)
    - **Communication Skills**
@@ -151,8 +151,8 @@ When the session completes:
 - **Backend**: Python, `asyncio`, LiveKit Agents (`livekit-agents`)
 - **WebRTC Transport**: LiveKit
 - **Speech-to-Text**: Deepgram
-- **Text-to-Speech**: Deepgram Aura (`aura-2-delia-en`)
-- **Conversational LLM**: Mistral AI (`mistral-small-latest`)
+- **Text-to-Speech**: ElevenLabs (Deepgram Aura fallback)
+- **Conversational LLM**: Groq (`llama-3.3-70b-versatile`)
 - **Evaluator LLM**: Groq (`openai/gpt-oss-120b`)
 - **Avatar Provider**: Beyond Presence (`livekit-plugins-bey`)
 
@@ -160,32 +160,43 @@ When the session completes:
 
 ## ⚙️ Setup & Installation
 
-1. **Install Python Dependencies:**
-   ```cmd
+1. **Install Python dependencies** (Python 3.10+):
+   ```bash
    python -m venv .venv
-   .venv\Scripts\activate
-   pip install livekit-agents livekit-plugins-deepgram livekit-plugins-elevenlabs livekit-plugins-bey livekit-plugins-silero livekit-plugins-groq livekit-plugins-openai python-dotenv
+   source .venv/bin/activate          # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
    ```
 
-2. **Install Frontend Dependencies:**
-   ```cmd
-   cd frontend
-   npm install
+2. **Install frontend dependencies:**
+   ```bash
+   cd frontend && npm install
    ```
 
-3. **Configure Environment Variables:**
-   Create a `.env` file in the root directory:
+3. **Configure environment variables** in a `.env` file in the project root:
    ```env
    LIVEKIT_URL=wss://your-livekit-domain.livekit.cloud
    LIVEKIT_API_KEY=your_livekit_key
    LIVEKIT_API_SECRET=your_livekit_secret
    DEEPGRAM_API_KEY=your_deepgram_key
-   MISTRAL_API_KEY=your_mistral_key
    GROQ_API_KEY=your_groq_key
-   BEY_API_KEY=your_bey_avatar_key
+   ELEVENLABS_API_KEY=your_elevenlabs_key   # optional, falls back to Deepgram TTS
+   BEY_API_KEY=your_bey_avatar_key          # optional, falls back to audio-only
    ```
 
-4. **Run the Application:**
-   ```cmd
-   start.bat
+4. **Run** (token server on :8880, agent worker, frontend on :5173):
+   ```bash
+   ./start.sh        # macOS / Linux
+   start.bat         # Windows
    ```
+
+## 📁 Project Structure
+
+```text
+app/
+  main.py          LiveKit agent: pipeline, avatar, 10-minute timer, report delivery
+  session.py       In-memory session state and speaking metrics (run `python -m app.session` to self-test)
+  evaluator.py     Transcript extraction and Groq report generation
+  prompts.py       Interviewer and evaluation prompts
+  token_server.py  Local LiveKit token endpoint for the frontend
+frontend/          React + Vite + LiveKit Components UI (api/token.py is the Vercel token endpoint)
+```
